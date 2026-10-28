@@ -1,0 +1,64 @@
+/*
+=================================================================
+Control and variant groups assigned randomly for this example
+=================================================================
+*/
+WITH user_cohorts AS (
+  SELECT 
+    user_pseudo_id,
+    CASE 
+      WHEN ABS(MOD(FARM_FINGERPRINT(user_pseudo_id), 2)) = 0 THEN 'Control'
+      ELSE 'Variant'
+    END AS experiment_group
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  WHERE _TABLE_SUFFIX BETWEEN '20201207' AND '20201221'
+  GROUP BY user_pseudo_id
+)
+/*
+=================================================================
+Querying for purchases
+=================================================================
+*/
+, user_activity AS (
+  SELECT 
+    e.user_pseudo_id,
+    experiment_group,
+    MAX(CASE WHEN event_name = 'purchase' THEN 1 ELSE 0 END) AS made_purchase
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*` e
+
+  INNER JOIN user_cohorts uc on e.user_pseudo_id = uc.user_pseudo_id
+
+  GROUP BY 
+  user_pseudo_id,
+  experiment_group
+)
+/*
+=================================================================
+Calculating distinct users, purchases, and conversion rate
+=================================================================
+*/
+, final_stats AS (
+  SELECT 
+    experiment_group,
+    COUNT(DISTINCT user_pseudo_id) AS n,
+    SUM(made_purchase) AS x,
+    SAFE_DIVIDE(SUM(made_purchase), COUNT(DISTINCT user_pseudo_id)) AS p
+  FROM user_activity
+  GROUP BY 1
+)
+/*
+=================================================================
+Statistical Calculations
+=================================================================
+*/
+SELECT 
+  Control.p AS p_control,
+  Variant.p AS p_variant,
+  -- Calculate Z-Score
+  (Variant.p - Control.p) / 
+    SQRT(
+      (Control.p * (1 - Control.p) / Control.n) + 
+      (Variant.p * (1 - Variant.p) / Variant.n)
+    ) AS z_score
+FROM final_stats Control, final_stats Variant
+WHERE Control.experiment_group = 'Control' AND Variant.experiment_group = 'Variant'
